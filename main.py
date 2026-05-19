@@ -12,13 +12,11 @@ TALKTALK_ACCESS_TOKEN = os.environ.get("TALKTALK_ACCESS_TOKEN")
 
 
 async def get_notion_content():
-    """노션 페이지 내용 가져오기"""
     headers = {
         "Authorization": f"Bearer {NOTION_API_KEY}",
         "Notion-Version": "2022-06-28",
     }
     async with httpx.AsyncClient() as client:
-        # 블록 내용 가져오기
         res = await client.get(
             f"https://api.notion.com/v1/blocks/{NOTION_PAGE_ID}/children",
             headers=headers
@@ -36,14 +34,13 @@ async def get_notion_content():
 
 
 async def ask_claude(manual_text: str, user_message: str):
-    """Claude API로 답변 생성"""
     headers = {
         "x-api-key": ANTHROPIC_API_KEY,
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
     body = {
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-haiku-4-5-20251001",
         "max_tokens": 1000,
         "system": f"""당신은 친절한 고객 상담 챗봇입니다.
 아래 매뉴얼을 참고해서 고객 질문에 답변해주세요.
@@ -61,11 +58,17 @@ async def ask_claude(manual_text: str, user_message: str):
             timeout=30,
         )
     data = res.json()
+    print("Claude API 응답:", data)  # 디버그용 로그
+    
+    if "content" not in data:
+        error_msg = data.get("error", {}).get("message", "알 수 없는 오류")
+        print("Claude API 오류:", error_msg)
+        return f"일시적인 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+    
     return data["content"][0]["text"]
 
 
 async def send_talktalk_message(user_id: str, text: str):
-    """네이버 톡톡으로 답변 전송"""
     headers = {
         "Authorization": TALKTALK_ACCESS_TOKEN,
         "Content-Type": "application/json",
@@ -76,27 +79,27 @@ async def send_talktalk_message(user_id: str, text: str):
         "textContent": {"text": text},
     }
     async with httpx.AsyncClient() as client:
-        await client.post(
+        res = await client.post(
             "https://talk.naver.com/v1/messages",
             headers=headers,
             json=body,
             timeout=10,
         )
+    print("톡톡 전송 응답:", res.status_code)
 
 
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
+    print("톡톡 수신 데이터:", data)
 
     event = data.get("event")
     user_id = data.get("user")
 
-    # 톡톡 연결 확인용 (open 이벤트)
     if event == "open":
         await send_talktalk_message(user_id, "안녕하세요! 무엇이든 질문해주세요 😊")
         return JSONResponse({"success": True})
 
-    # 메시지 수신
     if event == "send":
         text_content = data.get("textContent", {})
         user_message = text_content.get("text", "")
@@ -104,13 +107,8 @@ async def webhook(request: Request):
         if not user_message:
             return JSONResponse({"success": True})
 
-        # 노션 매뉴얼 가져오기
         manual_text = await get_notion_content()
-
-        # Claude로 답변 생성
         answer = await ask_claude(manual_text, user_message)
-
-        # 톡톡으로 전송
         await send_talktalk_message(user_id, answer)
 
     return JSONResponse({"success": True})
